@@ -52,6 +52,12 @@ WebServer.prototype.handleRequest = function(req, res) {
       return;
     }
     
+    // 提供静态文件（默认头像）
+    if (pathname === '/avatar_default.webp') {
+      this.serveDefaultAvatar(res);
+      return;
+    }
+    
     // 提供HTML页面
     this.serveHtmlPage(res);
   } catch (error) {
@@ -474,6 +480,29 @@ WebServer.prototype.refreshUserDetails = function(req, res) {
   });
 };
 
+// 提供默认头像文件
+WebServer.prototype.serveDefaultAvatar = function(res) {
+  try {
+    var avatarPath = path.join(__dirname, 'avatar_default.webp');
+    fs.readFile(avatarPath, function(err, data) {
+      if (err) {
+        console.error('读取默认头像失败:', err.message);
+        res.writeHead(404);
+        res.end('Not Found');
+        return;
+      }
+      res.setHeader('Content-Type', 'image/webp');
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.writeHead(200);
+      res.end(data);
+    });
+  } catch (error) {
+    console.error('提供默认头像时出错:', error.message);
+    res.writeHead(500);
+    res.end('Internal Server Error');
+  }
+};
+
 // 提供HTML页面
 WebServer.prototype.serveHtmlPage = function(res) {
   res.setHeader('Content-Type', 'text/html');
@@ -511,7 +540,7 @@ WebServer.prototype.getHtmlContent = function() {
   html += '.user-list { list-style: none; padding: 0; }';
   html += '.user-item { display: flex; justify-content: space-between; align-items: center; padding: 16px; border: 1px solid #e5e5ea; border-radius: 8px; margin-bottom: 12px; }';
   html += '.user-info { display: flex; align-items: center; gap: 12px; }';
-  html += '.user-avatar { width: 48px; height: 48px; min-width: 48px; min-height: 48px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'white\'%3E%3Cpath d=\'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z\'/%3E%3C/svg%3E"); background-size: 60% 60%, cover; background-position: center; background-repeat: no-repeat; display: block; }';
+  html += '.user-avatar { width: 48px; height: 48px; min-width: 48px; min-height: 48px; border-radius: 50%; object-fit: cover; background-image: url("/avatar_default.webp"); background-size: cover; background-position: center; background-repeat: no-repeat; display: block; }';
   html += '.user-avatar.loading { opacity: 0.6; }';
   html += '.user-details { display: flex; flex-direction: column; gap: 4px; }';
   html += '.user-name { font-weight: 600; font-size: 16px; color: #1d1d1f; }';
@@ -531,7 +560,7 @@ WebServer.prototype.getHtmlContent = function() {
   html += '.modal.show { display: flex; align-items: center; justify-content: center; }';
   html += '.modal-content { background-color: white; border-radius: 12px; padding: 24px; max-width: 500px; width: 90%; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2); }';
   html += '.modal-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e5ea; }';
-  html += '.modal-avatar { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }';
+  html += '.modal-avatar { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background-image: url("/avatar_default.webp"); background-size: cover; background-position: center; }';
   html += '.modal-user-info { flex: 1; }';
   html += '.modal-user-name { font-size: 20px; font-weight: 600; color: #1d1d1f; margin-bottom: 4px; }';
   html += '.modal-user-username { font-size: 16px; color: #6e6e73; }';
@@ -577,7 +606,7 @@ WebServer.prototype.getHtmlContent = function() {
   html += '<div id="addUserModal" class="modal">';
   html += '<div class="modal-content">';
   html += '<div class="modal-header">';
-  html += '<img id="modalAvatar" class="modal-avatar" src="" alt="">';
+  html += '<img id="modalAvatar" class="modal-avatar" src="/avatar_default.webp" alt="">';
   html += '<div class="modal-user-info">';
   html += '<div id="modalUserName" class="modal-user-name"></div>';
   html += '<div id="modalUserUsername" class="modal-user-username"></div>';
@@ -653,8 +682,9 @@ WebServer.prototype.getHtmlContent = function() {
   html += '      var avatarImg = document.createElement("img");';
   html += '      avatarImg.className = "user-avatar loading";';
   html += '      avatarImg.alt = username;';
+  html += '      avatarImg.src = "/avatar_default.webp";';
   html += '      avatarImg.onload = function() { this.classList.remove("loading"); };';
-  html += '      avatarImg.onerror = function() { this.classList.remove("loading"); this.style.opacity = "0.3"; };';
+  html += '      avatarImg.onerror = function() { this.src = "/avatar_default.webp"; this.classList.remove("loading"); };';
   html += '      var userDetails = document.createElement("div");';
   html += '      userDetails.className = "user-details";';
   html += '      var userName = document.createElement("div");';
@@ -709,7 +739,10 @@ WebServer.prototype.getHtmlContent = function() {
   html += '      userList.appendChild(li);';
   html += '      fetchUserDetails(username, function(userData) {';
   html += '        if (userData.avatar) {';
+  html += '          avatarImg.onerror = function() { this.src = "/avatar_default.webp"; this.classList.remove("loading"); };';
   html += '          avatarImg.src = userData.avatar;';
+  html += '        } else {';
+  html += '          avatarImg.src = "/avatar_default.webp";';
   html += '        }';
   html += '        userName.textContent = userData.name || "@" + username;';
   html += '        userUsername.textContent = "@" + username;';
@@ -731,7 +764,11 @@ WebServer.prototype.getHtmlContent = function() {
   html += '        if (data.success && data.user) {';
   html += '          userDetailsCache[username] = data.user;';
   html += '          if (data.user.avatar) {';
+  html += '            avatarImg.onerror = function() { this.src = "/avatar_default.webp"; this.classList.remove("loading"); };';
   html += '            avatarImg.src = data.user.avatar;';
+  html += '          } else {';
+  html += '            avatarImg.src = "/avatar_default.webp";';
+  html += '            avatarImg.classList.remove("loading");';
   html += '          }';
   html += '          userName.textContent = data.user.name || "@" + username;';
   html += '          userLink.href = data.user.profileUrl || "https://twitter.com/" + username;';
@@ -772,7 +809,7 @@ WebServer.prototype.getHtmlContent = function() {
   html += '  modal.classList.add("show");';
   html += '  document.getElementById("modalUserName").textContent = "验证中...";';
   html += '  document.getElementById("modalUserUsername").textContent = "@" + username;';
-  html += '  document.getElementById("modalAvatar").src = "";';
+  html += '  document.getElementById("modalAvatar").src = "/avatar_default.webp";';
   html += '  var xhr = new XMLHttpRequest();';
   html += '  xhr.open("GET", "/api/users/details?username=" + encodeURIComponent(username), true);';
   html += '  xhr.onreadystatechange = function() {';
@@ -787,7 +824,11 @@ WebServer.prototype.getHtmlContent = function() {
   html += '            document.getElementById("modalUserName").textContent = data.user.name || "@" + username;';
   html += '            document.getElementById("modalUserUsername").textContent = "@" + username;';
   html += '            if (data.user.avatar) {';
-  html += '              document.getElementById("modalAvatar").src = data.user.avatar;';
+  html += '              var modalAvatar = document.getElementById("modalAvatar");';
+  html += '              modalAvatar.onerror = function() { this.src = "/avatar_default.webp"; };';
+  html += '              modalAvatar.src = data.user.avatar;';
+  html += '            } else {';
+  html += '              document.getElementById("modalAvatar").src = "/avatar_default.webp";';
   html += '            }';
   html += '          } else {';
   html += '            showNotification("用户不存在或无法获取信息", "error");';
