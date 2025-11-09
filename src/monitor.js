@@ -55,22 +55,50 @@ class Monitor {
     try {
       if (!fs.existsSync(this.usersFile)) {
         // 如果文件不存在，创建并写入初始用户列表
-        fs.writeJsonSync(this.usersFile, {
-          users: this.targetUsers,
-          updatedAt: new Date().toISOString()
-        }, { spaces: 2 });
-        console.log(`已创建用户列表文件: ${this.usersFile}`);
-      } else {
-        // 如果文件存在，从文件读取用户列表
-        const userData = fs.readJsonSync(this.usersFile);
-        if (userData.users && Array.isArray(userData.users) && userData.users.length > 0) {
-          this.targetUsers = userData.users;
-          console.log(`已从文件加载用户列表: ${this.targetUsers.join(', ')}`);
+        if (this.targetUsers && this.targetUsers.length > 0) {
+          fs.writeJsonSync(this.usersFile, {
+            users: this.targetUsers,
+            updatedAt: new Date().toISOString()
+          }, { spaces: 2 });
+          console.log(`已创建用户列表文件: ${this.usersFile}`);
+        } else {
+          // 如果初始用户列表为空，创建空文件
+          fs.writeJsonSync(this.usersFile, {
+            users: [],
+            updatedAt: new Date().toISOString()
+          }, { spaces: 2 });
+          console.log(`已创建空的用户列表文件: ${this.usersFile}`);
+          console.warn('警告: 用户列表为空，请通过Web界面或CLI工具添加用户');
         }
+      } else {
+        // 如果文件存在，从文件读取用户列表（优先使用文件中的用户列表）
+        const userData = fs.readJsonSync(this.usersFile);
+        if (userData.users && Array.isArray(userData.users)) {
+          if (userData.users.length > 0) {
+            this.targetUsers = userData.users;
+            console.log(`已从文件加载用户列表 (${userData.users.length}个用户): ${this.targetUsers.join(', ')}`);
+          } else {
+            // 文件存在但用户列表为空
+            this.targetUsers = [];
+            console.log('用户列表文件存在但为空');
+            console.warn('警告: 用户列表为空，请通过Web界面或CLI工具添加用户');
+          }
+        } else {
+          console.warn('用户列表文件格式不正确，使用配置中的用户列表');
+        }
+      }
+      
+      // 最终检查：如果用户列表仍然为空，给出警告
+      if (!this.targetUsers || this.targetUsers.length === 0) {
+        console.warn('警告: 当前没有要监控的用户，请通过Web界面或CLI工具添加用户');
       }
     } catch (error) {
       console.error(`初始化用户列表文件时出错:`, error.message);
-      console.log(`使用配置中的用户列表: ${this.targetUsers.join(', ')}`);
+      if (this.targetUsers && this.targetUsers.length > 0) {
+        console.log(`使用配置中的用户列表: ${this.targetUsers.join(', ')}`);
+      } else {
+        console.warn('警告: 无法读取用户列表文件，且配置中也没有用户');
+      }
     }
   }
   

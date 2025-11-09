@@ -10,15 +10,10 @@ dotenv.config();
 const downloadDir = process.env.DOWNLOAD_DIR || './downloads';
 fs.ensureDirSync(downloadDir);
 
-// 解析目标用户
+// 解析目标用户（从环境变量，如果为空则使用空数组，后续会从users.json读取）
 const targetUsers = (process.env.TARGET_USERS || '').split(',')
   .map(user => user.trim())
   .filter(user => user.length > 0);
-
-if (targetUsers.length === 0) {
-  console.error('请在.env文件中配置要监控的用户');
-  process.exit(1);
-}
 
 // 创建状态记录目录
 const stateDir = './state';
@@ -29,7 +24,7 @@ const monitor = new Monitor({
   apiKey: process.env.API_KEY,
   apiBaseUrl: process.env.API_BASE_URL || 'https://api.tikhub.io',
   proxyUrl: process.env.PROXY_URL || '',
-  targetUsers,
+  targetUsers, // 初始用户列表（可能为空，会从users.json读取）
   monitorInterval: parseInt(process.env.MONITOR_INTERVAL) || 60, // 分钟
   maxInitialTweets: parseInt(process.env.MAX_INITIAL_TWEETS) || 20, // 新用户初始下载推文数量
   downloadDir,
@@ -46,14 +41,42 @@ const monitor = new Monitor({
 // 导出monitor对象，方便外部访问
 module.exports = monitor;
 
-// 启动监控器
-console.log(`开始监控用户: ${targetUsers.join(', ')}`);
-console.log(`监控间隔: ${process.env.MONITOR_INTERVAL}分钟`);
-monitor.start();
+// 获取实际加载的用户列表（从users.json读取后的）
+const actualUsers = monitor.getUsers();
+
+// 检查是否有用户需要监控
+if (actualUsers.length === 0) {
+  console.warn('========================================');
+  console.warn('警告: 当前没有要监控的用户');
+  console.warn('请通过以下方式添加用户:');
+  console.warn('1. 使用Web界面: http://localhost:' + (process.env.WEB_PORT || 3000));
+  console.warn('2. 使用CLI工具: node cli.js add username');
+  console.warn('3. 直接编辑 users.json 文件');
+  console.warn('========================================');
+} else {
+  // 启动监控器
+  console.log(`开始监控用户: ${actualUsers.join(', ')}`);
+  console.log(`监控间隔: ${process.env.MONITOR_INTERVAL || 60}分钟`);
+  monitor.start();
+}
+
+// 启动Web管理界面（如果启用）
+let webServer = null;
+if (process.env.WEB_ENABLED === 'true') {
+  const WebServer = require('./src/webServer');
+  webServer = new WebServer({
+    port: process.env.WEB_PORT || 3000,
+    monitor: monitor
+  });
+  webServer.start();
+}
 
 // 优雅退出处理
 process.on('SIGINT', () => {
   console.log('正在停止监控服务...');
+  if (webServer) {
+    webServer.stop();
+  }
   monitor.stop();
   process.exit(0);
 });
