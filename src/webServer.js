@@ -2,11 +2,16 @@ const http = require('http');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 function WebServer(options) {
   this.port = options.port || 3000;
   this.monitor = options.monitor;
   this.server = null;
+  // 密码认证配置
+  this.password = process.env.WEB_PASSWORD || 'admin123'; // 默认密码，可通过环境变量设置
+  this.sessions = {}; // 简单的内存session存储
+  this.sessionTimeout = 24 * 60 * 60 * 1000; // 24小时超时
 }
 
 // 启动Web服务器
@@ -25,6 +30,7 @@ WebServer.prototype.start = function() {
     
     this.server.listen(this.port, function() {
       console.log('Web管理界面已启动，访问地址: http://localhost:' + this.port);
+      console.log('默认密码: ' + this.password + ' (可通过环境变量 WEB_PASSWORD 修改)');
     }.bind(this));
   } catch (error) {
     console.error('启动Web服务器失败:', error.message);
@@ -38,6 +44,70 @@ WebServer.prototype.stop = function() {
       console.log('Web管理界面已停止');
     });
   }
+};
+
+// 生成session ID
+WebServer.prototype.generateSessionId = function() {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+// 创建session
+WebServer.prototype.createSession = function() {
+  var sessionId = this.generateSessionId();
+  this.sessions[sessionId] = {
+    createdAt: Date.now(),
+    lastAccess: Date.now()
+  };
+  // 清理过期session
+  this.cleanExpiredSessions();
+  return sessionId;
+};
+
+// 验证session
+WebServer.prototype.validateSession = function(sessionId) {
+  if (!sessionId || !this.sessions[sessionId]) {
+    return false;
+  }
+  var session = this.sessions[sessionId];
+  var now = Date.now();
+  // 检查是否过期
+  if (now - session.lastAccess > this.sessionTimeout) {
+    delete this.sessions[sessionId];
+    return false;
+  }
+  // 更新最后访问时间
+  session.lastAccess = now;
+  return true;
+};
+
+// 清理过期session
+WebServer.prototype.cleanExpiredSessions = function() {
+  var now = Date.now();
+  var self = this;
+  Object.keys(this.sessions).forEach(function(sessionId) {
+    var session = self.sessions[sessionId];
+    if (now - session.lastAccess > self.sessionTimeout) {
+      delete self.sessions[sessionId];
+    }
+  });
+};
+
+// 获取session ID（从cookie）
+WebServer.prototype.getSessionId = function(req) {
+  var cookies = req.headers.cookie || '';
+  var match = cookies.match(/sessionId=([^;]+)/);
+  return match ? match[1] : null;
+};
+
+// 设置session cookie
+WebServer.prototype.setSessionCookie = function(res, sessionId) {
+  res.setHeader('Set-Cookie', 'sessionId=' + sessionId + '; Path=/; HttpOnly; Max-Age=' + (this.sessionTimeout / 1000));
+};
+
+// 检查认证
+WebServer.prototype.checkAuth = function(req) {
+  var sessionId = this.getSessionId(req);
+  return this.validateSession(sessionId);
 };
 
 // 处理HTTP请求
@@ -59,7 +129,7 @@ WebServer.prototype.handleRequest = function(req, res) {
     }
     
     // 提供HTML页面
-    this.serveHtmlPage(res);
+    this.serveHtmlPage(req, res);
   } catch (error) {
     console.error('处理请求时出错:', error.message);
     res.writeHead(500);
@@ -75,6 +145,31 @@ WebServer.prototype.handleApiRequest = function(req, res, pathname, query) {
     
     // 记录API请求（用于调试）
     console.log(`[API] ${req.method} ${pathname}`);
+    
+    // 登录API不需要认证
+    if (pathname === '/api/login' && req.method === 'POST') {
+      this.handleLogin(req, res);
+      return;
+    }
+    
+    // 登出API
+    if (pathname === '/api/logout' && req.method === 'POST') {
+      this.handleLogout(req, res);
+      return;
+    }
+    
+    // 检查认证状态API
+    if (pathname === '/api/auth/check' && req.method === 'GET') {
+      this.handleAuthCheck(req, res);
+      return;
+    }
+    
+    // 其他API需要认证
+    if (!this.checkAuth(req)) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: '未授权，请先登录' }));
+      return;
+    }
     
     // 获取用户列表
     if (pathname === '/api/users' && req.method === 'GET') {
@@ -118,6 +213,60 @@ WebServer.prototype.handleApiRequest = function(req, res, pathname, query) {
     res.writeHead(500);
     res.end(JSON.stringify({ error: '服务器内部错误' }));
   }
+};
+
+// 处理登录
+WebServer.prototype.handleLogin = function(req, res) {
+  var body = '';
+  req.on('data', function(chunk) {
+    body += chunk;
+  });
+  
+  req.on('end', function() {
+    try {
+      var data = JSON.parse(body);
+      var password = data.password || '';
+      
+      if (password === this.password) {
+        var sessionId = this.createSession();
+        this.setSessionCookie(res, sessionId);
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, message: '登录成功' }));
+      } else {
+        res.writeHead(401);
+        res.end(JSON.stringify({ error: '密码错误' }));
+      }
+    } catch (e) {
+      console.error('处理登录请求时出错:', e.message);
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: '请求数据格式错误: ' + e.message }));
+    }
+  }.bind(this));
+  
+  req.on('error', function(err) {
+    console.error('接收登录请求数据时出错:', err.message);
+    res.writeHead(500);
+    res.end(JSON.stringify({ error: '接收请求数据失败' }));
+  });
+};
+
+// 处理登出
+WebServer.prototype.handleLogout = function(req, res) {
+  var sessionId = this.getSessionId(req);
+  if (sessionId && this.sessions[sessionId]) {
+    delete this.sessions[sessionId];
+  }
+  // 清除cookie
+  res.setHeader('Set-Cookie', 'sessionId=; Path=/; HttpOnly; Max-Age=0');
+  res.writeHead(200);
+  res.end(JSON.stringify({ success: true, message: '已登出' }));
+};
+
+// 检查认证状态
+WebServer.prototype.handleAuthCheck = function(req, res) {
+  var isAuthenticated = this.checkAuth(req);
+  res.writeHead(200);
+  res.end(JSON.stringify({ authenticated: isAuthenticated }));
 };
 
 // 获取用户列表
@@ -504,7 +653,7 @@ WebServer.prototype.serveDefaultAvatar = function(res) {
 };
 
 // 提供HTML页面
-WebServer.prototype.serveHtmlPage = function(res) {
+WebServer.prototype.serveHtmlPage = function(req, res) {
   res.setHeader('Content-Type', 'text/html');
   res.writeHead(200);
   
@@ -570,13 +719,33 @@ WebServer.prototype.getHtmlContent = function() {
   html += '.btn-cancel:hover { background-color: #e5e5ea; }';
   html += '.loading-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #f3f3f3; border-top: 2px solid #0071e3; border-radius: 50%; animation: spin 1s linear infinite; }';
   html += '@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }';
+  html += '#loginContainer { display: flex; align-items: center; justify-content: center; min-height: 100vh; }';
+  html += '#loginCard { max-width: 400px; width: 90%; }';
+  html += '#mainContainer { display: none; }';
+  html += '#mainContainer.show { display: block; }';
+  html += '.header-actions { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }';
+  html += '.btn-logout { background-color: #6e6e73; color: white; font-size: 14px; padding: 8px 16px; }';
+  html += '.btn-logout:hover { background-color: #515154; }';
   html += '</style>';
   html += '</head>';
   html += '<body>';
-  html += '<div class="container">';
-  html += '<header>';
+  html += '<div id="loginContainer">';
+  html += '<div class="card" id="loginCard">';
+  html += '<h2>登录</h2>';
+  html += '<div class="form-group">';
+  html += '<input type="password" id="passwordInput" class="form-input" placeholder="请输入密码" autocomplete="off">';
+  html += '</div>';
+  html += '<button id="loginBtn" class="btn btn-primary" style="width: 100%;">登录</button>';
+  html += '<div id="loginError" style="color: #ff3b30; margin-top: 12px; display: none;"></div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div id="mainContainer" class="container">';
+  html += '<div class="header-actions">';
+  html += '<header style="margin-bottom: 0;">';
   html += '<h1>X-Downloader 管理界面</h1>';
   html += '</header>';
+  html += '<button id="logoutBtn" class="btn btn-logout">登出</button>';
+  html += '</div>';
   html += '<div class="card">';
   html += '<h2>添加用户</h2>';
   html += '<div class="form-group">';
@@ -598,6 +767,7 @@ WebServer.prototype.getHtmlContent = function() {
   html += '<div class="stat-card">';
   html += '<div id="monitorInterval" class="stat-number">0</div>';
   html += '<div class="stat-label">监控间隔(分钟)</div>';
+  html += '</div>';
   html += '</div>';
   html += '</div>';
   html += '</div>';
@@ -634,10 +804,14 @@ WebServer.prototype.getHtmlContent = function() {
   html += '  var xhr = new XMLHttpRequest();';
   html += '  xhr.open("GET", "/api/users", true);';
   html += '  xhr.onreadystatechange = function() {';
-  html += '    if (xhr.readyState === 4 && xhr.status === 200) {';
-  html += '      var data = JSON.parse(xhr.responseText);';
-  html += '      renderUserList(data.users);';
-  html += '      updateStats();';
+  html += '    if (xhr.readyState === 4) {';
+  html += '      if (xhr.status === 200) {';
+  html += '        var data = JSON.parse(xhr.responseText);';
+  html += '        renderUserList(data.users);';
+  html += '        updateStats();';
+  html += '      } else if (xhr.status === 401) {';
+  html += '        showLoginForm();';
+  html += '      }';
   html += '    }';
   html += '  };';
   html += '  xhr.send();';
@@ -958,7 +1132,99 @@ WebServer.prototype.getHtmlContent = function() {
   html += '  };';
   html += '  xhr.send();';
   html += '}';
+  html += 'function checkAuth() {';
+  html += '  var xhr = new XMLHttpRequest();';
+  html += '  xhr.open("GET", "/api/auth/check", true);';
+  html += '  xhr.onreadystatechange = function() {';
+  html += '    if (xhr.readyState === 4) {';
+  html += '      try {';
+  html += '        var data = JSON.parse(xhr.responseText);';
+  html += '        if (data.authenticated) {';
+  html += '          showMainContent();';
+  html += '        } else {';
+  html += '          showLoginForm();';
+  html += '        }';
+  html += '      } catch (e) {';
+  html += '        showLoginForm();';
+  html += '      }';
+  html += '    }';
+  html += '  };';
+  html += '  xhr.send();';
+  html += '}';
+  html += 'function showLoginForm() {';
+  html += '  document.getElementById("loginContainer").style.display = "flex";';
+  html += '  document.getElementById("mainContainer").classList.remove("show");';
+  html += '}';
+  html += 'function showMainContent() {';
+  html += '  document.getElementById("loginContainer").style.display = "none";';
+  html += '  document.getElementById("mainContainer").classList.add("show");';
+  html += '  loadUsers();';
+  html += '}';
+  html += 'function handleLogin() {';
+  html += '  var password = document.getElementById("passwordInput").value;';
+  html += '  var errorDiv = document.getElementById("loginError");';
+  html += '  if (!password) {';
+  html += '    errorDiv.textContent = "请输入密码";';
+  html += '    errorDiv.style.display = "block";';
+  html += '    return;';
+  html += '  }';
+  html += '  var loginBtn = document.getElementById("loginBtn");';
+  html += '  var originalText = loginBtn.textContent;';
+  html += '  loginBtn.innerHTML = "<span class=\'loading-spinner\'></span> 登录中...";';
+  html += '  loginBtn.disabled = true;';
+  html += '  errorDiv.style.display = "none";';
+  html += '  var xhr = new XMLHttpRequest();';
+  html += '  xhr.open("POST", "/api/login", true);';
+  html += '  xhr.setRequestHeader("Content-Type", "application/json");';
+  html += '  xhr.onreadystatechange = function() {';
+  html += '    if (xhr.readyState === 4) {';
+  html += '      loginBtn.textContent = originalText;';
+  html += '      loginBtn.disabled = false;';
+  html += '      if (xhr.status === 200) {';
+  html += '        try {';
+  html += '          var data = JSON.parse(xhr.responseText);';
+  html += '          if (data.success) {';
+  html += '            document.getElementById("passwordInput").value = "";';
+  html += '            showMainContent();';
+  html += '          } else {';
+  html += '            errorDiv.textContent = data.error || "登录失败";';
+  html += '            errorDiv.style.display = "block";';
+  html += '          }';
+  html += '        } catch (e) {';
+  html += '          errorDiv.textContent = "登录失败";';
+  html += '          errorDiv.style.display = "block";';
+  html += '        }';
+  html += '      } else {';
+  html += '        try {';
+  html += '          var data = JSON.parse(xhr.responseText);';
+  html += '          errorDiv.textContent = data.error || "密码错误";';
+  html += '        } catch (e) {';
+  html += '          errorDiv.textContent = "密码错误";';
+  html += '        }';
+  html += '        errorDiv.style.display = "block";';
+  html += '      }';
+  html += '    }';
+  html += '  };';
+  html += '  xhr.send(JSON.stringify({ password: password }));';
+  html += '}';
+  html += 'function handleLogout() {';
+  html += '  var xhr = new XMLHttpRequest();';
+  html += '  xhr.open("POST", "/api/logout", true);';
+  html += '  xhr.onreadystatechange = function() {';
+  html += '    if (xhr.readyState === 4) {';
+  html += '      showLoginForm();';
+  html += '    }';
+  html += '  };';
+  html += '  xhr.send();';
+  html += '}';
   html += 'document.addEventListener("DOMContentLoaded", function() {';
+  html += '  document.getElementById("loginBtn").onclick = handleLogin;';
+  html += '  document.getElementById("logoutBtn").onclick = handleLogout;';
+  html += '  document.getElementById("passwordInput").addEventListener("keyup", function(event) {';
+  html += '    if (event.keyCode === 13) {';
+  html += '      handleLogin();';
+  html += '    }';
+  html += '  });';
   html += '  document.getElementById("addUserBtn").onclick = addUser;';
   html += '  document.getElementById("modalConfirmBtn").onclick = confirmAddUser;';
   html += '  document.getElementById("modalCancelBtn").onclick = cancelAddUser;';
@@ -972,8 +1238,12 @@ WebServer.prototype.getHtmlContent = function() {
   html += '      addUser();';
   html += '    }';
   html += '  });';
-  html += '  loadUsers();';
-  html += '  setInterval(loadUsers, 60000);';
+  html += '  checkAuth();';
+  html += '  setInterval(function() {';
+  html += '    if (document.getElementById("mainContainer").classList.contains("show")) {';
+  html += '      loadUsers();';
+  html += '    }';
+  html += '  }, 60000);';
   html += '});';
   html += '</script>';
   html += '</body>';

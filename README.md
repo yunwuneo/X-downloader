@@ -39,6 +39,11 @@ API_BASE_URL=https://api.tikhub.io
 API_KEY=your_api_key_here  # 请填入您的TikHub API密钥
 PROXY_URL=http://username:password@proxyhost:port  # HTTP/HTTPS代理地址（可选）
 
+# 功能开关
+MONITOR_ENABLED=true  # 是否启用监控功能（true/false，默认为true）
+WEB_ENABLED=true  # 是否启用Web管理界面（true/false，默认为false）
+WEB_PORT=3000  # Web界面端口（仅在WEB_ENABLED=true时生效）
+
 # 监控设置
 MONITOR_INTERVAL=60  # 监控间隔（分钟）
 TARGET_USERS=elonmusk,twitter  # 要监控的用户（用逗号分隔）
@@ -99,19 +104,28 @@ node cli.js clear
 
 2. **配置环境变量**：
    编辑`.env`文件，填入您的API密钥和其他设置。
-   配置`MAX_INITIAL_TWEETS`设置新用户初始下载的推文数量（可选，默认为20）。
+   - 配置`MAX_INITIAL_TWEETS`设置新用户初始下载的推文数量（可选，默认为20）
+   - 配置`MONITOR_ENABLED`控制是否启用监控功能（默认为true）
+   - 配置`WEB_ENABLED`控制是否启用Web管理界面（默认为false）
 
 3. **添加要监控的用户**：
    ```bash
    node cli.js add username1 username2
    ```
+   或者通过Web界面添加（如果启用了Web界面）
 
-4. **启动监控服务**：
+4. **启动服务**：
    ```bash
    npm start
    ```
 
-服务将按照设定的时间间隔自动检查并下载新的推文内容。每次检查时，服务会自动读取`users.json`文件中的最新用户列表。
+### 功能模式
+
+- **仅监控模式**：`MONITOR_ENABLED=true`，`WEB_ENABLED=false` - 只运行监控功能
+- **仅Web界面模式**：`MONITOR_ENABLED=false`，`WEB_ENABLED=true` - 只运行Web界面，用于调试和管理
+- **完整模式**：`MONITOR_ENABLED=true`，`WEB_ENABLED=true` - 同时运行监控和Web界面（推荐）
+
+如果启用了监控功能，服务将按照设定的时间间隔自动检查并下载新的推文内容。每次检查时，服务会自动读取`users.json`文件中的最新用户列表。
 
 ## 新用户初始下载功能
 

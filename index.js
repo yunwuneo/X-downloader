@@ -41,23 +41,31 @@ const monitor = new Monitor({
 // 导出monitor对象，方便外部访问
 module.exports = monitor;
 
-// 获取实际加载的用户列表（从users.json读取后的）
-const actualUsers = monitor.getUsers();
-
-// 检查是否有用户需要监控
-if (actualUsers.length === 0) {
-  console.warn('========================================');
-  console.warn('警告: 当前没有要监控的用户');
-  console.warn('请通过以下方式添加用户:');
-  console.warn('1. 使用Web界面: http://localhost:' + (process.env.WEB_PORT || 3000));
-  console.warn('2. 使用CLI工具: node cli.js add username');
-  console.warn('3. 直接编辑 users.json 文件');
-  console.warn('========================================');
+// 启动监控器（如果启用）
+const monitorEnabled = process.env.MONITOR_ENABLED !== 'false'; // 默认为 true，除非明确设置为 'false'
+if (monitorEnabled) {
+  // 获取实际加载的用户列表（从users.json读取后的）
+  const actualUsers = monitor.getUsers();
+  
+  // 检查是否有用户需要监控
+  if (actualUsers.length === 0) {
+    console.warn('========================================');
+    console.warn('警告: 当前没有要监控的用户');
+    console.warn('请通过以下方式添加用户:');
+    console.warn('1. 使用Web界面: http://localhost:' + (process.env.WEB_PORT || 3000));
+    console.warn('2. 使用CLI工具: node cli.js add username');
+    console.warn('3. 直接编辑 users.json 文件');
+    console.warn('========================================');
+  } else {
+    // 启动监控器
+    console.log(`开始监控用户: ${actualUsers.join(', ')}`);
+    console.log(`监控间隔: ${process.env.MONITOR_INTERVAL || 60}分钟`);
+    monitor.start();
+  }
 } else {
-  // 启动监控器
-  console.log(`开始监控用户: ${actualUsers.join(', ')}`);
-  console.log(`监控间隔: ${process.env.MONITOR_INTERVAL || 60}分钟`);
-  monitor.start();
+  console.log('========================================');
+  console.log('监控功能已禁用 (MONITOR_ENABLED=false)');
+  console.log('========================================');
 }
 
 // 启动Web管理界面（如果启用）
@@ -73,11 +81,13 @@ if (process.env.WEB_ENABLED === 'true') {
 
 // 优雅退出处理
 process.on('SIGINT', () => {
-  console.log('正在停止监控服务...');
+  console.log('正在停止服务...');
   if (webServer) {
     webServer.stop();
   }
-  monitor.stop();
+  if (monitorEnabled) {
+    monitor.stop();
+  }
   process.exit(0);
 });
 
@@ -85,10 +95,23 @@ process.on('SIGINT', () => {
 console.log('========================================');
 console.log('X-Downloader 服务已启动');
 console.log('========================================');
-console.log('您可以通过修改 users.json 文件来更新要监控的用户列表');
-console.log('文件格式示例:');
-console.log('{');
-console.log('  "users": ["elonmusk", "twitter", "username3"],');
-console.log('  "updatedAt": "2023-01-01T00:00:00.000Z"');
-console.log('}');
+if (monitorEnabled) {
+  console.log('监控功能: 已启用');
+} else {
+  console.log('监控功能: 已禁用');
+}
+if (process.env.WEB_ENABLED === 'true') {
+  console.log('Web界面: 已启用 (http://localhost:' + (process.env.WEB_PORT || 3000) + ')');
+} else {
+  console.log('Web界面: 已禁用');
+}
 console.log('========================================');
+if (monitorEnabled) {
+  console.log('您可以通过修改 users.json 文件来更新要监控的用户列表');
+  console.log('文件格式示例:');
+  console.log('{');
+  console.log('  "users": ["elonmusk", "twitter", "username3"],');
+  console.log('  "updatedAt": "2023-01-01T00:00:00.000Z"');
+  console.log('}');
+  console.log('========================================');
+}
