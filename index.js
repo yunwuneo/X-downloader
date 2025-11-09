@@ -6,9 +6,25 @@ const Monitor = require('./src/monitor');
 // 加载环境变量
 dotenv.config();
 
-// 创建下载目录
+// 检测运行模式：serverless 或 local
+const isServerless = process.env.SERVERLESS_MODE === 'true' || 
+                     process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
+                     process.env.VERCEL !== undefined ||
+                     process.env.NETLIFY !== undefined ||
+                     process.env.CF_PAGES !== undefined ||
+                     (typeof globalThis !== 'undefined' && globalThis.env && globalThis.env.DB);
+
+// 存储模式：serverless模式下使用S3，否则使用本地存储
+const storageMode = isServerless ? 's3' : 'local';
+
+// 数据库模式：只有在SERVERLESS_MODE=true时才使用D1，否则使用本地SQLite
+const dbMode = process.env.SERVERLESS_MODE === 'true' ? 'd1' : 'sqlite';
+
+// 创建下载目录（仅在本地模式下）
 const downloadDir = process.env.DOWNLOAD_DIR || './downloads';
-fs.ensureDirSync(downloadDir);
+if (!isServerless) {
+  fs.ensureDirSync(downloadDir);
+}
 
 // 解析目标用户（从环境变量，如果为空则使用空数组，后续会从users.json读取）
 const targetUsers = (process.env.TARGET_USERS || '').split(',')
@@ -35,7 +51,20 @@ const monitor = new Monitor({
     videoQuality: process.env.VIDEO_QUALITY || 'highest'
   },
   stateDir,
-  usersFile: './users.json' // 用户列表文件
+  usersFile: './users.json', // 用户列表文件
+  // Serverless模式配置（支持AWS S3及所有S3兼容API）
+  storageMode: storageMode,
+  s3Bucket: process.env.S3_BUCKET,
+  s3Region: process.env.S3_REGION || process.env.AWS_REGION,
+  s3BasePrefix: process.env.S3_BASE_PREFIX || 'downloads',
+  s3Endpoint: process.env.S3_ENDPOINT, // S3兼容服务的endpoint（如Cloudflare R2）
+  s3ForcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true', // 某些S3兼容服务需要
+  s3AccessKeyId: process.env.S3_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID,
+  s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY,
+  // 数据库配置（支持SQLite和Cloudflare D1）
+  dbMode: dbMode,
+  d1: typeof globalThis !== 'undefined' && globalThis.env ? globalThis.env.DB : null, // Cloudflare D1绑定
+  d1Binding: process.env.D1_BINDING_NAME // D1绑定名称（如果使用自定义名称）
 });
 
 // 导出monitor对象，方便外部访问
@@ -95,6 +124,7 @@ process.on('SIGINT', () => {
 console.log('========================================');
 console.log('X-Downloader 服务已启动');
 console.log('========================================');
+console.log('运行模式: ' + (isServerless ? 'Serverless (S3存储)' : '本地模式 (文件系统)'));
 if (monitorEnabled) {
   console.log('监控功能: 已启用');
 } else {
@@ -104,6 +134,26 @@ if (process.env.WEB_ENABLED === 'true') {
   console.log('Web界面: 已启用 (http://localhost:' + (process.env.WEB_PORT || 3000) + ')');
 } else {
   console.log('Web界面: 已禁用');
+}
+if (isServerless) {
+  console.log('S3存储配置:');
+  console.log('  - Bucket: ' + (process.env.S3_BUCKET || '未设置'));
+  console.log('  - Region: ' + (process.env.S3_REGION || process.env.AWS_REGION || '未设置'));
+  console.log('  - Endpoint: ' + (process.env.S3_ENDPOINT || '使用默认AWS S3'));
+  console.log('  - Base Prefix: ' + (process.env.S3_BASE_PREFIX || 'downloads'));
+  if (process.env.S3_ENDPOINT) {
+    console.log('  - 使用S3兼容服务: ' + process.env.S3_ENDPOINT);
+  }
+}
+console.log('数据库配置:');
+if (dbMode === 'd1') {
+  console.log('  - 模式: Cloudflare D1 (Serverless)');
+  if (process.env.D1_BINDING_NAME) {
+    console.log('  - 绑定名称: ' + process.env.D1_BINDING_NAME);
+  }
+} else {
+  console.log('  - 模式: SQLite (本地)');
+  console.log('  - 数据库文件: state/download_status.db');
 }
 console.log('========================================');
 if (monitorEnabled) {

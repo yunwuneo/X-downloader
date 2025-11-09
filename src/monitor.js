@@ -16,7 +16,16 @@ class Monitor {
     this.downloader = new Downloader({
       downloadDir: options.downloadDir,
       downloadOptions: options.downloadOptions,
-      proxyUrl: options.proxyUrl || null
+      proxyUrl: options.proxyUrl || null,
+      // 存储模式配置
+      storageMode: options.storageMode || 'local',
+      s3Bucket: options.s3Bucket,
+      s3Region: options.s3Region,
+      s3BasePrefix: options.s3BasePrefix,
+      s3Endpoint: options.s3Endpoint,
+      s3ForcePathStyle: options.s3ForcePathStyle,
+      s3AccessKeyId: options.s3AccessKeyId,
+      s3SecretAccessKey: options.s3SecretAccessKey
     });
     
     this.targetUsers = options.targetUsers;
@@ -26,12 +35,19 @@ class Monitor {
     this.usersFile = options.usersFile || './users.json'; // 用户列表文件路径
     this.cronJob = null;
     
-    // 确保state目录存在
-    fs.ensureDirSync(this.stateDir);
+    // 确保state目录存在（仅在本地模式下）
+    if (options.dbMode !== 'd1') {
+      fs.ensureDirSync(this.stateDir);
+    }
     
     // 初始化数据库管理器
-    const dbPath = path.join(this.stateDir, 'download_status.db');
-    this.db = new DatabaseManager(dbPath);
+    // 在serverless模式下，dbPath不会被使用，但为了兼容性仍然传递
+    const dbPath = options.dbMode === 'd1' ? null : path.join(this.stateDir, 'download_status.db');
+    this.db = new DatabaseManager(dbPath, {
+      dbMode: options.dbMode || 'sqlite', // 'sqlite' 或 'd1'
+      d1: options.d1,
+      d1Binding: options.d1Binding
+    });
     
     // 初始化用户列表文件
     this.initializeUsersFile();
