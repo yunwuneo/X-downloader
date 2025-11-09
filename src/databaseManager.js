@@ -58,6 +58,24 @@ class DatabaseManager {
                 }
               }
             );
+            
+            // 创建用户资料缓存表
+            this.db.run(
+              `CREATE TABLE IF NOT EXISTS user_profiles (
+                username TEXT PRIMARY KEY,
+                name TEXT,
+                avatar TEXT,
+                profile_url TEXT,
+                cached_at TIMESTAMP,
+                updated_at TIMESTAMP
+              )`,
+              (err) => {
+                if (err) {
+                  console.error('创建用户资料表失败:', err.message);
+                  reject(err);
+                }
+              }
+            );
           });
           
           resolve();
@@ -276,6 +294,68 @@ class DatabaseManager {
           }
         );
       });
+    });
+  }
+
+  // 获取用户资料缓存
+  async getUserProfile(username) {
+    await this.init();
+    
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        `SELECT * FROM user_profiles WHERE username = ?`,
+        [username],
+        (err, row) => {
+          if (err) {
+            console.error(`获取用户 ${username} 资料缓存失败:`, err.message);
+            reject(err);
+          } else {
+            resolve(row);
+          }
+        }
+      );
+    });
+  }
+
+  // 保存用户资料缓存
+  async saveUserProfile(username, name, avatar, profileUrl) {
+    await this.init();
+    
+    return new Promise((resolve, reject) => {
+      const now = new Date().toISOString();
+      this.db.run(
+        `INSERT OR REPLACE INTO user_profiles (username, name, avatar, profile_url, cached_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [username, name, avatar, profileUrl, now, now],
+        (err) => {
+          if (err) {
+            console.error(`保存用户 ${username} 资料缓存失败:`, err.message);
+            reject(err);
+          } else {
+            resolve();
+          }
+        }
+      );
+    });
+  }
+
+  // 删除用户资料缓存
+  async deleteUserProfile(username) {
+    await this.init();
+    
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `DELETE FROM user_profiles WHERE username = ?`,
+        [username],
+        (err) => {
+          if (err) {
+            console.error(`删除用户 ${username} 资料缓存失败:`, err.message);
+            reject(err);
+          } else {
+            resolve();
+          }
+        }
+      );
     });
   }
 }

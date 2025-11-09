@@ -92,6 +92,22 @@ class TwitterApi {
     }
   }
   
+  // 获取用户资料
+  async fetchUserProfile(screenName) {
+    try {
+      const response = await this.client.get('/api/v1/twitter/web/fetch_user_profile', {
+        params: {
+          screen_name: screenName
+        }
+      });
+      
+      return response.data;
+    } catch (error) {
+      console.error('获取用户资料时出错:', error.response?.data || error.message);
+      throw new Error(`获取用户 ${screenName} 资料失败: ${error.message}`);
+    }
+  }
+  
   // 分页获取所有用户媒体
   async fetchAllUserMedia(screenName) {
     let allMedia = [];

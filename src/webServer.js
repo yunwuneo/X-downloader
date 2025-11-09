@@ -91,14 +91,22 @@ WebServer.prototype.handleApiRequest = function(req, res, pathname, query) {
     else if (pathname === '/api/stats' && req.method === 'GET') {
       this.getStats(res);
     }
-    // 重试失败的下载
-    else if (pathname === '/api/retry' && req.method === 'POST') {
-      this.retryFailedHandler(req, res);
-    }
-    else {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'API端点不存在' }));
-    }
+  // 重试失败的下载
+  else if (pathname === '/api/retry' && req.method === 'POST') {
+    this.retryFailedHandler(req, res);
+  }
+  // 获取用户详细信息
+  else if (pathname === '/api/users/details' && req.method === 'GET') {
+    this.getUsersDetails(req, res, query);
+  }
+  // 刷新用户详细信息缓存
+  else if (pathname === '/api/users/refresh' && req.method === 'POST') {
+    this.refreshUserDetails(req, res);
+  }
+  else {
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: 'API端点不存在' }));
+  }
   } catch (error) {
     console.error('处理API请求时出错:', error.message);
     res.writeHead(500);
@@ -331,6 +339,116 @@ WebServer.prototype.retryFailedHandler = function(req, res) {
   });
 };
 
+// 获取用户详细信息（从缓存或API）
+WebServer.prototype.getUsersDetails = function(req, res, query) {
+  try {
+    var username = query.username;
+    if (!username) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: '用户名不能为空' }));
+      return;
+    }
+    
+    var self = this;
+    // 先从数据库缓存读取
+    this.monitor.db.getUserProfile(username).then(function(cachedProfile) {
+      if (cachedProfile) {
+        // 有缓存，直接返回
+        var userData = {
+          username: cachedProfile.username,
+          name: cachedProfile.name || username,
+          avatar: cachedProfile.avatar || '',
+          profileUrl: cachedProfile.profile_url || 'https://twitter.com/' + username
+        };
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, user: userData, cached: true }));
+      } else {
+        // 没有缓存，从API获取
+        self.fetchAndCacheUserProfile(username, res);
+      }
+    }).catch(function(err) {
+      console.error('读取用户资料缓存失败:', err.message);
+      // 缓存读取失败，从API获取
+      self.fetchAndCacheUserProfile(username, res);
+    });
+  } catch (error) {
+    console.error('处理用户详细信息请求时出错:', error.message);
+    res.writeHead(500);
+    res.end(JSON.stringify({ error: '处理请求失败' }));
+  }
+};
+
+// 从API获取并缓存用户资料
+WebServer.prototype.fetchAndCacheUserProfile = function(username, res) {
+  var self = this;
+  this.monitor.api.fetchUserProfile(username).then(function(response) {
+    if (response && response.data) {
+      var userInfo = response.data;
+      var userData = {
+        username: username,
+        name: userInfo.name || userInfo.screen_name || username,
+        avatar: userInfo.avatar || userInfo.profile_image_url_https || userInfo.profile_image_url || '',
+        profileUrl: 'https://twitter.com/' + username
+      };
+      
+      // 保存到缓存
+      self.monitor.db.saveUserProfile(
+        username,
+        userData.name,
+        userData.avatar,
+        userData.profileUrl
+      ).catch(function(err) {
+        console.error('保存用户资料缓存失败:', err.message);
+      });
+      
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, user: userData, cached: false }));
+    } else {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: '未找到用户信息' }));
+    }
+  }).catch(function(err) {
+    console.error('获取用户详细信息失败:', err.message);
+    res.writeHead(500);
+    res.end(JSON.stringify({ error: '获取用户详细信息失败: ' + err.message }));
+  });
+};
+
+// 刷新用户详细信息缓存
+WebServer.prototype.refreshUserDetails = function(req, res) {
+  var body = '';
+  req.on('data', function(chunk) {
+    body += chunk;
+  });
+  
+  req.on('end', function() {
+    try {
+      var data = JSON.parse(body);
+      var username = data.username;
+      
+      if (!username) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: '用户名不能为空' }));
+        return;
+      }
+      
+      var self = this;
+      // 强制从API获取最新数据
+      this.fetchAndCacheUserProfile(username, res);
+    } catch (e) {
+      console.error('处理刷新请求时出错:', e.message);
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: '请求数据格式错误: ' + e.message }));
+    }
+  }.bind(this));
+  
+  req.on('error', function(err) {
+    console.error('接收请求数据时出错:', err.message);
+    res.writeHead(500);
+    res.end(JSON.stringify({ error: '接收请求数据失败' }));
+  });
+};
+
 // 提供HTML页面
 WebServer.prototype.serveHtmlPage = function(res) {
   res.setHeader('Content-Type', 'text/html');
@@ -368,6 +486,13 @@ WebServer.prototype.getHtmlContent = function() {
   html += '.user-list { list-style: none; padding: 0; }';
   html += '.user-item { display: flex; justify-content: space-between; align-items: center; padding: 16px; border: 1px solid #e5e5ea; border-radius: 8px; margin-bottom: 12px; }';
   html += '.user-info { display: flex; align-items: center; gap: 12px; }';
+  html += '.user-avatar { width: 48px; height: 48px; min-width: 48px; min-height: 48px; border-radius: 50%; object-fit: cover; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'white\'%3E%3Cpath d=\'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z\'/%3E%3C/svg%3E"); background-size: 60% 60%, cover; background-position: center; background-repeat: no-repeat; display: block; }';
+  html += '.user-avatar.loading { opacity: 0.6; }';
+  html += '.user-details { display: flex; flex-direction: column; gap: 4px; }';
+  html += '.user-name { font-weight: 600; font-size: 16px; color: #1d1d1f; }';
+  html += '.user-username { font-size: 14px; color: #6e6e73; }';
+  html += '.user-link { color: #0071e3; text-decoration: none; font-size: 14px; }';
+  html += '.user-link:hover { text-decoration: underline; }';
   html += '.user-actions { display: flex; gap: 8px; }';
   html += '.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }';
   html += '.stat-card { text-align: center; padding: 20px; background-color: #f8f8f8; border-radius: 8px; }';
@@ -431,40 +556,149 @@ WebServer.prototype.getHtmlContent = function() {
   html += '  };';
   html += '  xhr.send();';
   html += '}';
+  html += 'var userDetailsCache = {};';
+  html += 'function fetchUserDetails(username, callback) {';
+  html += '  if (userDetailsCache[username]) {';
+  html += '    callback(userDetailsCache[username]);';
+  html += '    return;';
+  html += '  }';
+  html += '  var xhr = new XMLHttpRequest();';
+  html += '  xhr.open("GET", "/api/users/details?username=" + encodeURIComponent(username), true);';
+  html += '  xhr.onreadystatechange = function() {';
+  html += '    if (xhr.readyState === 4 && xhr.status === 200) {';
+  html += '      try {';
+  html += '        var data = JSON.parse(xhr.responseText);';
+  html += '        if (data.success && data.user) {';
+  html += '          userDetailsCache[username] = data.user;';
+  html += '          callback(data.user);';
+  html += '        } else {';
+  html += '          callback({ username: username, name: username, avatar: "", profileUrl: "https://twitter.com/" + username });';
+  html += '        }';
+  html += '      } catch (e) {';
+  html += '        callback({ username: username, name: username, avatar: "", profileUrl: "https://twitter.com/" + username });';
+  html += '      }';
+  html += '    } else if (xhr.readyState === 4) {';
+  html += '      callback({ username: username, name: username, avatar: "", profileUrl: "https://twitter.com/" + username });';
+  html += '    }';
+  html += '  };';
+  html += '  xhr.send();';
+  html += '}';
   html += 'function renderUserList(users) {';
   html += '  var userList = document.getElementById("userList");';
   html += '  userList.innerHTML = "";';
   html += '  for (var i = 0; i < users.length; i++) {';
-  html += '    var username = users[i];';
-  html += '    var li = document.createElement("li");';
-  html += '    li.className = "user-item";';
-  html += '    var userInfo = document.createElement("div");';
-  html += '    userInfo.className = "user-info";';
-  html += '    userInfo.innerHTML = "<strong>@" + username + "</strong>";';
-  html += '    var userActions = document.createElement("div");';
-  html += '    userActions.className = "user-actions";';
-  html += '    var retryBtn = document.createElement("button");';
-  html += '    retryBtn.className = "btn btn-success";';
-  html += '    retryBtn.textContent = "重试下载";';
-  html += '    retryBtn.onclick = function(name) {';
-  html += '      return function() {';
-  html += '        retryUser(name);';
-  html += '      };';
-  html += '    }(username);';
-  html += '    var deleteBtn = document.createElement("button");';
-  html += '    deleteBtn.className = "btn btn-danger";';
-  html += '    deleteBtn.textContent = "删除";';
-  html += '    deleteBtn.onclick = function(name) {';
-  html += '      return function() {';
-  html += '        deleteUser(name);';
-  html += '      };';
-  html += '    }(username);';
-  html += '    userActions.appendChild(retryBtn);';
-  html += '    userActions.appendChild(deleteBtn);';
-  html += '    li.appendChild(userInfo);';
-  html += '    li.appendChild(userActions);';
-  html += '    userList.appendChild(li);';
+  html += '    (function() {';
+  html += '      var username = users[i];';
+  html += '      var li = document.createElement("li");';
+  html += '      li.className = "user-item";';
+  html += '      var userInfo = document.createElement("div");';
+  html += '      userInfo.className = "user-info";';
+  html += '      var avatarImg = document.createElement("img");';
+  html += '      avatarImg.className = "user-avatar loading";';
+  html += '      avatarImg.alt = username;';
+  html += '      avatarImg.onload = function() { this.classList.remove("loading"); };';
+  html += '      avatarImg.onerror = function() { this.classList.remove("loading"); this.style.opacity = "0.3"; };';
+  html += '      var userDetails = document.createElement("div");';
+  html += '      userDetails.className = "user-details";';
+  html += '      var userName = document.createElement("div");';
+  html += '      userName.className = "user-name";';
+  html += '      userName.textContent = "@" + username;';
+  html += '      var userUsername = document.createElement("div");';
+  html += '      userUsername.className = "user-username";';
+  html += '      userUsername.textContent = "@" + username;';
+  html += '      var userLink = document.createElement("a");';
+  html += '      userLink.className = "user-link";';
+  html += '      userLink.href = "https://twitter.com/" + username;';
+  html += '      userLink.target = "_blank";';
+  html += '      userLink.textContent = "查看主页";';
+  html += '      userDetails.appendChild(userName);';
+  html += '      userDetails.appendChild(userUsername);';
+  html += '      userDetails.appendChild(userLink);';
+  html += '      userInfo.appendChild(avatarImg);';
+  html += '      userInfo.appendChild(userDetails);';
+  html += '      var userActions = document.createElement("div");';
+  html += '      userActions.className = "user-actions";';
+  html += '      var refreshBtn = document.createElement("button");';
+  html += '      refreshBtn.className = "btn btn-primary";';
+  html += '      refreshBtn.textContent = "刷新";';
+  html += '      refreshBtn.style.fontSize = "14px";';
+  html += '      refreshBtn.style.padding = "8px 16px";';
+  html += '      refreshBtn.onclick = function(name, img, nameEl, linkEl) {';
+  html += '        return function() {';
+  html += '          refreshUserDetails(name, img, nameEl, linkEl);';
+  html += '        };';
+  html += '      }(username, avatarImg, userName, userLink);';
+  html += '      var retryBtn = document.createElement("button");';
+  html += '      retryBtn.className = "btn btn-success";';
+  html += '      retryBtn.textContent = "重试下载";';
+  html += '      retryBtn.onclick = function(name) {';
+  html += '        return function() {';
+  html += '          retryUser(name);';
+  html += '        };';
+  html += '      }(username);';
+  html += '      var deleteBtn = document.createElement("button");';
+  html += '      deleteBtn.className = "btn btn-danger";';
+  html += '      deleteBtn.textContent = "删除";';
+  html += '      deleteBtn.onclick = function(name) {';
+  html += '        return function() {';
+  html += '          deleteUser(name);';
+  html += '        };';
+  html += '      }(username);';
+  html += '      userActions.appendChild(refreshBtn);';
+  html += '      userActions.appendChild(retryBtn);';
+  html += '      userActions.appendChild(deleteBtn);';
+  html += '      li.appendChild(userInfo);';
+  html += '      li.appendChild(userActions);';
+  html += '      userList.appendChild(li);';
+  html += '      fetchUserDetails(username, function(userData) {';
+  html += '        if (userData.avatar) {';
+  html += '          avatarImg.src = userData.avatar;';
+  html += '        }';
+  html += '        userName.textContent = userData.name || "@" + username;';
+  html += '        userUsername.textContent = "@" + username;';
+  html += '        userLink.href = userData.profileUrl || "https://twitter.com/" + username;';
+  html += '      });';
+  html += '    })();';
   html += '  }';
+  html += '}';
+  html += 'function refreshUserDetails(username, avatarImg, userName, userLink) {';
+  html += '  delete userDetailsCache[username];';
+  html += '  avatarImg.classList.add("loading");';
+  html += '  var xhr = new XMLHttpRequest();';
+  html += '  xhr.open("POST", "/api/users/refresh", true);';
+  html += '  xhr.setRequestHeader("Content-Type", "application/json");';
+  html += '  xhr.onreadystatechange = function() {';
+  html += '    if (xhr.readyState === 4 && xhr.status === 200) {';
+  html += '      try {';
+  html += '        var data = JSON.parse(xhr.responseText);';
+  html += '        if (data.success && data.user) {';
+  html += '          userDetailsCache[username] = data.user;';
+  html += '          if (data.user.avatar) {';
+  html += '            avatarImg.src = data.user.avatar;';
+  html += '          }';
+  html += '          userName.textContent = data.user.name || "@" + username;';
+  html += '          userLink.href = data.user.profileUrl || "https://twitter.com/" + username;';
+  html += '          avatarImg.classList.remove("loading");';
+  html += '          showNotification("用户信息已更新", "success");';
+  html += '        } else {';
+  html += '          avatarImg.classList.remove("loading");';
+  html += '          showNotification("刷新失败", "error");';
+  html += '        }';
+  html += '      } catch (e) {';
+  html += '        avatarImg.classList.remove("loading");';
+  html += '        showNotification("刷新失败", "error");';
+  html += '      }';
+  html += '    } else if (xhr.readyState === 4) {';
+  html += '      avatarImg.classList.remove("loading");';
+  html += '      try {';
+  html += '        var data = JSON.parse(xhr.responseText);';
+  html += '        showNotification(data.error || "刷新失败", "error");';
+  html += '      } catch (e) {';
+  html += '        showNotification("刷新失败", "error");';
+  html += '      }';
+  html += '    }';
+  html += '  };';
+  html += '  xhr.send(JSON.stringify({ username: username }));';
   html += '}';
   html += 'function addUser() {';
   html += '  var username = document.getElementById("usernameInput").value.trim();';
