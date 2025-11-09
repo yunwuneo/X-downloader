@@ -170,6 +170,31 @@ WebServer.prototype.addUserHandler = function(req, res) {
       var success = this.monitor.updateUsers(newUsers);
       
       if (success) {
+        var self = this;
+        // 确保用户资料已缓存（验证时应该已经获取并缓存了）
+        // 如果没有缓存，这里会触发一次API调用
+        this.monitor.api.fetchUserProfile(username).then(function(response) {
+          if (response && response.data) {
+            var userInfo = response.data;
+            var userData = {
+              username: username,
+              name: userInfo.name || userInfo.screen_name || username,
+              avatar: userInfo.avatar || userInfo.profile_image_url_https || userInfo.profile_image_url || '',
+              profileUrl: 'https://twitter.com/' + username
+            };
+            self.monitor.db.saveUserProfile(
+              username,
+              userData.name,
+              userData.avatar,
+              userData.profileUrl
+            ).catch(function(err) {
+              console.error('保存用户资料缓存失败:', err.message);
+            });
+          }
+        }).catch(function(err) {
+          console.error('获取用户资料失败:', err.message);
+        });
+        
         // 立即检查新用户
         this.monitor.checkUser(username).catch(function(err) {
           console.error('检查新用户失败:', err.message);
@@ -502,6 +527,20 @@ WebServer.prototype.getHtmlContent = function() {
   html += '#notification.success { background-color: #34c759; }';
   html += '#notification.error { background-color: #ff3b30; }';
   html += '#notification.show { opacity: 1; }';
+  html += '.modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); }';
+  html += '.modal.show { display: flex; align-items: center; justify-content: center; }';
+  html += '.modal-content { background-color: white; border-radius: 12px; padding: 24px; max-width: 500px; width: 90%; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2); }';
+  html += '.modal-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e5ea; }';
+  html += '.modal-avatar { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }';
+  html += '.modal-user-info { flex: 1; }';
+  html += '.modal-user-name { font-size: 20px; font-weight: 600; color: #1d1d1f; margin-bottom: 4px; }';
+  html += '.modal-user-username { font-size: 16px; color: #6e6e73; }';
+  html += '.modal-body { margin-bottom: 24px; }';
+  html += '.modal-actions { display: flex; gap: 12px; justify-content: flex-end; }';
+  html += '.btn-cancel { background-color: #f5f5f7; color: #1d1d1f; }';
+  html += '.btn-cancel:hover { background-color: #e5e5ea; }';
+  html += '.loading-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #f3f3f3; border-top: 2px solid #0071e3; border-radius: 50%; animation: spin 1s linear infinite; }';
+  html += '@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }';
   html += '</style>';
   html += '</head>';
   html += '<body>';
@@ -535,6 +574,24 @@ WebServer.prototype.getHtmlContent = function() {
   html += '</div>';
   html += '</div>';
   html += '<div id="notification"></div>';
+  html += '<div id="addUserModal" class="modal">';
+  html += '<div class="modal-content">';
+  html += '<div class="modal-header">';
+  html += '<img id="modalAvatar" class="modal-avatar" src="" alt="">';
+  html += '<div class="modal-user-info">';
+  html += '<div id="modalUserName" class="modal-user-name"></div>';
+  html += '<div id="modalUserUsername" class="modal-user-username"></div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="modal-body">';
+  html += '<p>确认要添加此用户到监控列表吗？</p>';
+  html += '</div>';
+  html += '<div class="modal-actions">';
+  html += '<button id="modalCancelBtn" class="btn btn-cancel">取消</button>';
+  html += '<button id="modalConfirmBtn" class="btn btn-primary">确认添加</button>';
+  html += '</div>';
+  html += '</div>';
+  html += '</div>';
   html += '<script>';
   html += 'function showNotification(message, type) {';
   html += '  var notification = document.getElementById("notification");';
@@ -700,23 +757,88 @@ WebServer.prototype.getHtmlContent = function() {
   html += '  };';
   html += '  xhr.send(JSON.stringify({ username: username }));';
   html += '}';
+  html += 'var pendingAddUser = null;';
   html += 'function addUser() {';
   html += '  var username = document.getElementById("usernameInput").value.trim();';
   html += '  if (!username) {';
   html += '    showNotification("用户名不能为空", "error");';
   html += '    return;';
   html += '  }';
+  html += '  var confirmBtn = document.getElementById("modalConfirmBtn");';
+  html += '  var originalText = confirmBtn.textContent;';
+  html += '  confirmBtn.innerHTML = "<span class=\'loading-spinner\'></span> 验证中...";';
+  html += '  confirmBtn.disabled = true;';
+  html += '  var modal = document.getElementById("addUserModal");';
+  html += '  modal.classList.add("show");';
+  html += '  document.getElementById("modalUserName").textContent = "验证中...";';
+  html += '  document.getElementById("modalUserUsername").textContent = "@" + username;';
+  html += '  document.getElementById("modalAvatar").src = "";';
+  html += '  var xhr = new XMLHttpRequest();';
+  html += '  xhr.open("GET", "/api/users/details?username=" + encodeURIComponent(username), true);';
+  html += '  xhr.onreadystatechange = function() {';
+  html += '    if (xhr.readyState === 4) {';
+  html += '      confirmBtn.textContent = originalText;';
+  html += '      confirmBtn.disabled = false;';
+  html += '      if (xhr.status === 200) {';
+  html += '        try {';
+  html += '          var data = JSON.parse(xhr.responseText);';
+  html += '          if (data.success && data.user) {';
+  html += '            pendingAddUser = username;';
+  html += '            document.getElementById("modalUserName").textContent = data.user.name || "@" + username;';
+  html += '            document.getElementById("modalUserUsername").textContent = "@" + username;';
+  html += '            if (data.user.avatar) {';
+  html += '              document.getElementById("modalAvatar").src = data.user.avatar;';
+  html += '            }';
+  html += '          } else {';
+  html += '            showNotification("用户不存在或无法获取信息", "error");';
+  html += '            modal.classList.remove("show");';
+  html += '          }';
+  html += '        } catch (e) {';
+  html += '          showNotification("解析用户信息失败", "error");';
+  html += '          modal.classList.remove("show");';
+  html += '        }';
+  html += '      } else {';
+  html += '        try {';
+  html += '          var data = JSON.parse(xhr.responseText);';
+  html += '          showNotification(data.error || "验证用户失败", "error");';
+  html += '        } catch (e) {';
+  html += '          showNotification("验证用户失败", "error");';
+  html += '        }';
+  html += '        modal.classList.remove("show");';
+  html += '      }';
+  html += '    }';
+  html += '  };';
+  html += '  xhr.send();';
+  html += '}';
+  html += 'function confirmAddUser() {';
+  html += '  if (!pendingAddUser) {';
+  html += '    return;';
+  html += '  }';
+  html += '  var username = pendingAddUser;';
+  html += '  var confirmBtn = document.getElementById("modalConfirmBtn");';
+  html += '  var originalText = confirmBtn.textContent;';
+  html += '  confirmBtn.innerHTML = "<span class=\'loading-spinner\'></span> 添加中...";';
+  html += '  confirmBtn.disabled = true;';
   html += '  var xhr = new XMLHttpRequest();';
   html += '  xhr.open("POST", "/api/users", true);';
   html += '  xhr.setRequestHeader("Content-Type", "application/json");';
   html += '  xhr.onreadystatechange = function() {';
   html += '    if (xhr.readyState === 4) {';
+  html += '      confirmBtn.textContent = originalText;';
+  html += '      confirmBtn.disabled = false;';
+  html += '      var modal = document.getElementById("addUserModal");';
   html += '      if (xhr.status === 200) {';
-  html += '        var data = JSON.parse(xhr.responseText);';
-  html += '        renderUserList(data.users);';
-  html += '        updateStats();';
-  html += '        document.getElementById("usernameInput").value = "";';
-  html += '        showNotification("用户添加成功", "success");';
+  html += '        try {';
+  html += '          var data = JSON.parse(xhr.responseText);';
+  html += '          renderUserList(data.users);';
+  html += '          updateStats();';
+  html += '          document.getElementById("usernameInput").value = "";';
+  html += '          showNotification("用户添加成功", "success");';
+  html += '          modal.classList.remove("show");';
+  html += '          pendingAddUser = null;';
+  html += '        } catch (e) {';
+  html += '          showNotification("添加失败", "error");';
+  html += '        }';
   html += '      } else {';
   html += '        try {';
   html += '          var data = JSON.parse(xhr.responseText);';
@@ -728,6 +850,11 @@ WebServer.prototype.getHtmlContent = function() {
   html += '    }';
   html += '  };';
   html += '  xhr.send(JSON.stringify({ username: username }));';
+  html += '}';
+  html += 'function cancelAddUser() {';
+  html += '  var modal = document.getElementById("addUserModal");';
+  html += '  modal.classList.remove("show");';
+  html += '  pendingAddUser = null;';
   html += '}';
   html += 'function deleteUser(username) {';
   html += '  if (!confirm("确定要删除用户 @" + username + " 吗？")) {';
@@ -792,6 +919,13 @@ WebServer.prototype.getHtmlContent = function() {
   html += '}';
   html += 'document.addEventListener("DOMContentLoaded", function() {';
   html += '  document.getElementById("addUserBtn").onclick = addUser;';
+  html += '  document.getElementById("modalConfirmBtn").onclick = confirmAddUser;';
+  html += '  document.getElementById("modalCancelBtn").onclick = cancelAddUser;';
+  html += '  document.getElementById("addUserModal").onclick = function(event) {';
+  html += '    if (event.target.id === "addUserModal") {';
+  html += '      cancelAddUser();';
+  html += '    }';
+  html += '  };';
   html += '  document.getElementById("usernameInput").addEventListener("keyup", function(event) {';
   html += '    if (event.keyCode === 13) {';
   html += '      addUser();';
